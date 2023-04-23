@@ -1,6 +1,8 @@
-import argparse
+# torch -> 1.9.0
+
 import os
 os.environ['KMP_DUPLICATE_LIB_OK']='True'
+import argparse
 import random
 import time
 from distutils.util import strtobool
@@ -17,15 +19,15 @@ from torch.utils.tensorboard import SummaryWriter
 def parse_args():
     # fmt: off
     parser = argparse.ArgumentParser()
-    parser.add_argument("--exp-name", type=str, default=os.path.basename(__file__).rstrip(".py"),
+    parser.add_argument("--exp-name", type=str, default= "ppo",#os.path.basename(__file__).rstrip(".py"),
         help="the name of this experiment")
     parser.add_argument("--gym-id", type=str, default="CartPole-v1",
         help="the id of the gym environment")
-    parser.add_argument("--learning-rate", type=float, default=2.5e-4,
+    parser.add_argument("--learning-rate", type=float, default=3e-3,
         help="the learning rate of the optimizer")
     parser.add_argument("--seed", type=int, default=1,
         help="seed of the experiment")
-    parser.add_argument("--total-timesteps", type=int, default=50000,
+    parser.add_argument("--total-timesteps", type=int, default=100000,
         help="total timesteps of the experiments")
     parser.add_argument("--cuda", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=False,
         help="if toggled, cuda will be enabled by default")
@@ -110,7 +112,7 @@ class Agent(nn.Module):
 
     def get_action_and_value(self, x, action=None):
         logits = self.actor(x)
-        probs = Categorical(logits=logits)
+        probs = Categorical(logits=logits) # softmax -> probs
         if action is None:
             action = probs.sample()
         return action, probs.log_prob(action), probs.entropy(), self.critic(x)
@@ -126,6 +128,7 @@ if __name__ == "__main__":
     )
 
     # TRY NOT TO MODIFY: seeding
+
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -138,10 +141,10 @@ if __name__ == "__main__":
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
     agent = Agent(envs).to(device)
-    optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=3e-4)
+    optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # ALGO Logic: Storage setup
-    obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
+    obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device) # (128, 4, 4)
     actions = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape).to(device)
     logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
@@ -152,6 +155,7 @@ if __name__ == "__main__":
     global_step = 0
     start_time = time.time()
     next_obs = torch.Tensor(envs.reset()).to(device)
+    print(f"next_obs shape {next_obs.shape}")
     next_done = torch.zeros(args.num_envs).to(device)
     num_updates = args.total_timesteps // args.batch_size
 
@@ -162,9 +166,9 @@ if __name__ == "__main__":
             lrnow = frac * args.learning_rate
             optimizer.param_groups[0]["lr"] = lrnow
 
-            for step in range(0, args.num_steps):
+            for step in range(0, args.num_steps): # 128
                 global_step += 1 * args.num_envs
-                obs[step] = next_obs
+                obs[step] = next_obs 
                 dones[step] = next_done
 
                 # ALGO LOGIC: action logic
@@ -192,16 +196,19 @@ if __name__ == "__main__":
             if args.gae:
                 advantages = torch.zeros_like(rewards).to(device)
                 lastgaelam = 0
-                for t in reversed(range(args.num_steps)):
+                for t in reversed(range(args.num_steps)): # 128
                     if t == args.num_steps - 1:
                         nextnonterminal = 1.0 - next_done
                         nextvalues = next_value
                     else:
-                        nextnonterminal = 1.0 - dones[t + 1]
+                        nextnonterminal = 1.0 - dones[t + 1] # done (128, 4)
                         nextvalues = values[t + 1]
                     delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
-                    advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
+                    advantages[t] = lastgaelam = delta + ((args.gamma * args.gae_lambda) ** t) * nextnonterminal * lastgaelam
                 returns = advantages + values
+                # GAE computation:
+                # delta(t) = reward(t) + gamma*ValueFunction(next_t) - ValueFunction(t) 
+                # A(s,t) = ∑_t^(T-1) ((gamma*lambda) ** t) * delta(t)
             else:
                 returns = torch.zeros_like(rewards).to(device)
                 for t in reversed(range(args.num_steps)):
@@ -215,15 +222,9 @@ if __name__ == "__main__":
                 advantages = returns - values
 
 
-
-
-
-
-
-
-
         # flatten the batch
-        b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
+        # reshape(-1,) = flatten
+        b_obs = obs.reshape((-1,) + envs.single_observation_space.shape) # (512, 4)
         b_logprobs = logprobs.reshape(-1)
         b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
         b_advantages = advantages.reshape(-1)
